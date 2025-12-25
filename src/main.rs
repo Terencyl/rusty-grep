@@ -58,13 +58,18 @@ fn main() {
 /// Search for a pattern in files
 fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let regex = get_regex(&args)?;
-    let show_filename = args.file.len() > 1;
 
-    for file in &args.file {
-        if let Err(e) = process_file(file, &args, &regex, show_filename) {
-            eprintln!("{}: {}", file, e);
+    if args.file.is_empty() || args.file.contains(&'-'.to_string()) {
+        process_stdin(&args, &regex)?
+    } else {
+        let show_filename = args.file.len() > 1;
+        for file in &args.file {
+            if let Err(e) = process_file(file, &args, &regex, show_filename) {
+                eprintln!("{}: {}", file, e);
+            }
         }
     }
+
     Ok(())
 }
 
@@ -188,4 +193,38 @@ fn highlight_matches(line: &str, regex: &Regex) -> String {
     // Append the remaining text of the line after the last match
     result.push_str(&line[last_match..]);
     result
+}
+
+fn process_stdin(args: &Args, regex: &Regex) -> Result<(), Box<dyn Error>> {
+    let stdin = std::io::stdin();
+    let mut count = 0;
+    let use_color = should_use_color(&args.color);
+
+    for (index, line) in stdin.lines().enumerate() {
+        let line = line?;
+        if get_matches(args, &line, regex) {
+            if args.files_with_matches {
+                println!("(standard input)");
+                return Ok(());
+            } else if args.count {
+                count += 1;
+            } else {
+                print_match(
+                    "(standard input)",
+                    index,
+                    &line,
+                    regex,
+                    args.show_line_numbers,
+                    false,
+                    use_color,
+                );
+            }
+        }
+    }
+
+    if args.count {
+        println!("{}", count);
+    }
+
+    Ok(())
 }
