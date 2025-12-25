@@ -1,6 +1,8 @@
 use std::error::Error;
+use std::io::IsTerminal;
 
 use clap::Parser;
+use colored::Colorize;
 use regex::Regex;
 
 #[derive(Parser)]
@@ -39,6 +41,10 @@ struct Args {
     /// Matches only lines containing the whole pattern, preceded or followed by non-word characters
     #[arg(short = 'w', long = "word-regexp")]
     whole_words: bool,
+
+    #[arg(long = "color", default_value = "auto", value_name = "WHEN")]
+    #[arg(value_parser = ["auto",  "always", "never"])]
+    color: String,
 }
 
 fn main() {
@@ -51,62 +57,62 @@ fn main() {
 
 /// Search for a pattern in files
 fn run(args: Args) -> Result<(), Box<dyn Error>> {
-    let pattern = get_pattern(&args);
     let regex = get_regex(&args)?;
     let show_filename = args.file.len() > 1;
 
     for file in &args.file {
-        if let Err(e) = process_file(file, &args, &pattern, &regex, show_filename) {
+        if let Err(e) = process_file(file, &args, &regex, show_filename) {
             eprintln!("{}: {}", file, e);
         }
     }
     Ok(())
 }
 
-/// Get the search pattern, converting to lowercase if case-insensitive
-fn get_pattern(args: &Args) -> String {
-    if args.case_insensitive {
-        args.pattern.to_lowercase()
+/// Create regex for highlighting and whole-word matching if needed
+fn get_regex(args: &Args) -> Result<Regex, Box<dyn Error>> {
+    let pattern = if args.whole_words {
+        format!(r"\b{}\b", regex::escape(&args.pattern))
     } else {
-        args.pattern.clone()
-    }
-}
+        regex::escape(&args.pattern).to_string()
+    };
 
-/// Create regex for whole-word matching if needed
-fn get_regex(args: &Args) -> Result<Option<Regex>, Box<dyn Error>> {
-    if args.whole_words {
-        let pattern = format!(r"\b{}\b", regex::escape(&args.pattern));
-        let regex = if args.case_insensitive {
-            Regex::new(&format!(r"(?i){}", pattern))?
-        } else {
-            Regex::new(&pattern)?
-        };
-        Ok(Some(regex))
+    let regex = if args.case_insensitive {
+        Regex::new(&format!(r"(?i){}", pattern))?
     } else {
-        Ok(None)
-    }
+        Regex::new(&pattern)?
+    };
+
+    Ok(regex)
 }
 
 /// Process a single file to find matching patterns inside of it and print them
 fn process_file(
     file: &str,
     args: &Args,
-    pattern: &str,
-    regex: &Option<Regex>,
+    regex: &Regex,
     show_filename: bool,
 ) -> Result<(), Box<dyn Error>> {
     let contents = std::fs::read_to_string(file)?;
     let mut count = 0;
+    let use_color = should_use_color(&args.color);
 
     for (index, line) in contents.lines().enumerate() {
-        if get_matches(args, pattern, line, regex) {
+        if get_matches(args, line, regex) {
             if args.files_with_matches {
                 println!("{file}");
                 return Ok(());
             } else if args.count {
                 count += 1;
             } else {
-                print_match(file, index, line, args.show_line_numbers, show_filename);
+                print_match(
+                    file,
+                    index,
+                    line,
+                    regex,
+                    args.show_line_numbers,
+                    show_filename,
+                    use_color,
+                );
             }
         }
     }
@@ -122,20 +128,21 @@ fn process_file(
 }
 
 /// Check if a line matches the pattern
-fn get_matches(args: &Args, pattern: &str, line: &str, regex: &Option<Regex>) -> bool {
-    let matches = if let Some(re) = regex {
-        re.is_match(line)
-    } else if args.case_insensitive {
-        line.to_lowercase().contains(pattern)
-    } else {
-        line.contains(pattern)
-    };
-
+fn get_matches(args: &Args, line: &str, regex: &Regex) -> bool {
+    let matches = regex.is_match(line);
     if args.invert_match { !matches } else { matches }
 }
 
 /// Print the matches of pattern in file to the output
-fn print_match(file: &str, index: usize, line: &str, show_line_number: bool, show_filename: bool) {
+fn print_match(
+    file: &str,
+    index: usize,
+    line: &str,
+    regex: &Regex,
+    show_line_number: bool,
+    show_filename: bool,
+    use_color: bool,
+) {
     let prefix = if show_filename {
         if show_line_number {
             format!("{file}:{}:", index + 1)
@@ -150,5 +157,35 @@ fn print_match(file: &str, index: usize, line: &str, show_line_number: bool, sho
         }
     };
 
-    println!("{prefix}{line}");
+    let output = if use_color {
+        highlight_matches(line, regex)
+    } else {
+        line.to_string()
+    };
+
+    println!("{prefix}{output}");
+}
+
+fn should_use_color(color_option: &str) -> bool {
+    match color_option {
+        "always" => true,
+        "never" => false,
+        "auto" | _ => std::io::stdout().is_terminal(),
+    }
+}
+
+fn highlight_matches(line: &str, regex: &Regex) -> String {
+    let mut result = String::new();
+    let mut last_match = 0;
+    for mat in regex.find_iter(line) {
+        // Append the line text before the match
+        result.push_str(&line[last_match..mat.start()]);
+        // Append the highlighted match
+        result.push_str(&line[mat.start()..mat.end()].red().bold().to_string());
+        // Update the last match position
+        last_match = mat.end();
+    }
+    // Append the remaining text of the line after the last match
+    result.push_str(&line[last_match..]);
+    result
 }
